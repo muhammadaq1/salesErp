@@ -8,31 +8,50 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Deploy to VPS
-      uses: appleboy/ssh-action@v0.1.7
+      uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.VPS_HOST }}
         username: ${{ secrets.VPS_USERNAME }}
         password: ${{ secrets.VPS_PASSWORD }}
+        port: 22
+        timeout: 300s
+        command_timeout: 300s
         script: |
-          # Update system packages
-          apt update && apt upgrade -y
+          set -e  # Exit on any error
+          export DEBIAN_FRONTEND=noninteractive
           
-          # Install LEMP stack if not already installed
-          apt install -y nginx mysql-server php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-mysqli php8.1-json php8.1-common php8.1-opcache unzip git
+          echo "[$(date)] Starting deployment..."
+          
+          # Update system packages
+          echo "[$(date)] Updating system packages..."
+          apt update -y
+          apt upgrade -y
+          
+          # Install LEMP stack
+          echo "[$(date)] Installing LEMP stack..."
+          apt install -y nginx mysql-server php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-mysqli php8.1-json php8.1-common php8.1-opcache unzip git curl
           
           # Start and enable services
-          systemctl start nginx || true
-          systemctl enable nginx || true
-          systemctl start php8.1-fpm || true
-          systemctl enable php8.1-fpm || true
-          systemctl start mysql || true
-          systemctl enable mysql || true
+          echo "[$(date)] Starting services..."
+          systemctl start nginx
+          systemctl enable nginx
+          systemctl start php8.1-fpm
+          systemctl enable php8.1-fpm
+          systemctl start mysql
+          systemctl enable mysql
+          
+          # Verify services are running
+          echo "[$(date)] Verifying services..."
+          systemctl is-active --quiet nginx || (echo "Nginx failed to start" && systemctl status nginx && exit 1)
+          systemctl is-active --quiet php8.1-fpm || (echo "PHP-FPM failed to start" && systemctl status php8.1-fpm && exit 1)
+          systemctl is-active --quiet mysql || (echo "MySQL failed to start" && systemctl status mysql && exit 1)
           
           # Create web directory
           mkdir -p /var/www/html
@@ -135,19 +154,42 @@ jobs:
           systemctl restart php8.1-fpm
           
           # Setup database (only if not exists)
-          mysql -u root -e "CREATE DATABASE IF NOT EXISTS saleserp_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
-          mysql -u root -e "CREATE USER IF NOT EXISTS 'erp_user'@'localhost' IDENTIFIED BY 'ErpPassword123!';" || true
-          mysql -u root -e "GRANT ALL PRIVILEGES ON saleserp_db.* TO 'erp_user'@'localhost';" || true
-          mysql -u root -e "FLUSH PRIVILEGES;" || true
+          echo "[$(date)] Setting up database..."
+          mysql -u root -e "CREATE DATABASE IF NOT EXISTS saleserp_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          mysql -u root -e "CREATE USER IF NOT EXISTS 'erp_user'@'localhost' IDENTIFIED BY 'ErpPassword123!';"
+          mysql -u root -e "GRANT ALL PRIVILEGES ON saleserp_db.* TO 'erp_user'@'localhost';"
+          mysql -u root -e "FLUSH PRIVILEGES;"
+          
+          # Test database connection
+          echo "[$(date)] Testing database connection..."
+          mysql -u erp_user -pErpPassword123! -e "SELECT 1;" saleserp_db
           
           # Import database if tables don't exist
+          echo "[$(date)] Checking database tables..."
           TABLE_COUNT=$(mysql -u erp_user -pErpPassword123! -e "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'saleserp_db';" --skip-column-names 2>/dev/null | tail -1)
           if [ "$TABLE_COUNT" = "0" ]; then
+            echo "[$(date)] Importing database schema..."
             mysql -u erp_user -pErpPassword123! saleserp_db < /var/www/html/install/sql/install.sql
+            echo "[$(date)] Database schema imported successfully"
+          else
+            echo "[$(date)] Database tables already exist, skipping import"
+          fi
+          
+          # Final verification
+          echo "[$(date)] Final system verification..."
+          systemctl is-active --quiet nginx && echo "✓ Nginx is running"
+          systemctl is-active --quiet php8.1-fpm && echo "✓ PHP-FPM is running" 
+          systemctl is-active --quiet mysql && echo "✓ MySQL is running"
+          
+          # Test web server response
+          if curl -f -s http://localhost > /dev/null; then
+            echo "✓ Web server is responding"
+          else
+            echo "✗ Web server is not responding" && exit 1
           fi
           
           # Clean up
           rm -rf /tmp/saleserp
           
-          echo "Deployment completed successfully!"
+          echo "[$(date)] Deployment completed successfully!"
           echo "Access your application at: http://45.61.140.213"
