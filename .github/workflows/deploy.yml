@@ -108,24 +108,48 @@ jobs:
           # Set up database configuration
           cp /var/www/html/application/config/database.example.php /var/www/html/application/config/database.php
           
+          # Create required directories if they don't exist
+          echo "[$(date)] Creating required directories..."
+          mkdir -p /var/www/html/application/cache
+          mkdir -p /var/www/html/application/ci_sessions
+          mkdir -p /var/www/html/uploads
+          
           # Set proper ownership and permissions
+          echo "[$(date)] Setting file permissions..."
           chown -R www-data:www-data /var/www/html
           chmod -R 755 /var/www/html
-          chmod -R 777 /var/www/html/assets/
-          chmod -R 777 /var/www/html/my-assets/
-          chmod -R 777 /var/www/html/application/config/
-          chmod -R 777 /var/www/html/application/cache/
-          chmod -R 777 /var/www/html/application/ci_sessions/
-          chmod -R 777 /var/www/html/uploads/
+          
+          # Set writable permissions for specific directories
+          chmod -R 777 /var/www/html/assets/ 2>/dev/null || true
+          chmod -R 777 /var/www/html/my-assets/ 2>/dev/null || true
+          chmod -R 777 /var/www/html/application/config/ 2>/dev/null || true
+          chmod -R 777 /var/www/html/application/cache/ 2>/dev/null || true
+          chmod -R 777 /var/www/html/application/ci_sessions/ 2>/dev/null || true
+          chmod -R 777 /var/www/html/uploads/ 2>/dev/null || true
+          
+          # Ensure index.php is readable
+          chmod 644 /var/www/html/index.php
+          
+          # Debug: Check web directory contents
+          echo "[$(date)] Checking web directory contents..."
+          ls -la /var/www/html/
+          echo "Checking if index.php exists:"
+          if [ -f "/var/www/html/index.php" ]; then
+            echo "✓ index.php exists"
+            head -5 /var/www/html/index.php
+          else
+            echo "✗ index.php missing"
+          fi
+          
           
           # Configure Nginx
           echo "[$(date)] Configuring Nginx..."
           cat > /etc/nginx/sites-available/saleserp << 'NGINXEOF'
           server {
-              listen 80;
-              listen [::]:80;
+              listen 80 default_server;
+              listen [::]:80 default_server;
               
-              server_name 45.61.140.213;
+              server_name 45.61.140.213 _;
               root /var/www/html;
               index index.php index.html index.htm;
               
@@ -145,6 +169,11 @@ jobs:
                   deny all;
                   access_log off;
                   log_not_found off;
+              }
+              
+              # Allow install directory temporarily
+              location /install/ {
+                  try_files $uri $uri/ /install/index.php?$query_string;
               }
               
               # Main location block
