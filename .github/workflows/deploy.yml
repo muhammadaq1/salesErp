@@ -250,6 +250,19 @@ jobs:
             echo "[$(date)] Database tables already exist, skipping import"
           fi
           
+          # Create default admin user
+          echo "[$(date)] Creating default admin user..."
+          mysql -u erp_user -pErpPassword123! saleserp_db << 'SQLEOF'
+          INSERT IGNORE INTO web_user (user_id, firstname, lastname, email, password, status, user_type, is_active, last_login, ip_address) 
+          VALUES (1, 'Admin', 'User', 'admin@saleserp.com', MD5('admin123'), 1, 1, 1, NOW(), '0.0.0.0')
+          ON DUPLICATE KEY UPDATE 
+          firstname='Admin', lastname='User', email='admin@saleserp.com', password=MD5('admin123'), status=1, user_type=1, is_active=1;
+          SQLEOF
+          
+          echo "[$(date)] Admin user created with credentials:"
+          echo "Email: admin@saleserp.com"
+          echo "Password: admin123"
+          
           # Final verification
           echo "[$(date)] Final system verification..."
           systemctl is-active --quiet nginx && echo "✓ Nginx is running"
