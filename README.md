@@ -70,3 +70,5 @@ This software requires a valid purchase license from CodeCanyon.
 ## Support
 
 For support and documentation, visit the project's support forum or contact the developers.
+
+<!-- Deployment trigger: 2025-09-24 22:09 -->
