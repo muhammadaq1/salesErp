@@ -237,14 +237,14 @@ jobs:
           
           # Test database connection
           echo "[$(date)] Testing database connection..."
-          mysql -u erp_user -pErpPassword123! -e "SELECT 1;" saleserp_db
+          mysql -u erp_user -p ErpPassword123! -e "SELECT 1;" saleserp_db
           
           # Import database if tables don't exist
           echo "[$(date)] Checking database tables..."
-          TABLE_COUNT=$(mysql -u erp_user -pErpPassword123! -e "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'saleserp_db';" --skip-column-names 2>/dev/null | tail -1)
+          TABLE_COUNT=$(mysql -u erp_user -p ErpPassword123! -e "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'saleserp_db';" --skip-column-names 2>/dev/null | tail -1)
           if [ "$TABLE_COUNT" = "0" ]; then
             echo "[$(date)] Importing database schema..."
-            mysql -u erp_user -pErpPassword123! saleserp_db < /var/www/html/install/sql/install.sql
+            mysql -u erp_user -p ErpPassword123! saleserp_db < /var/www/html/install/sql/install.sql
             echo "[$(date)] Database schema imported successfully"
           else
             echo "[$(date)] Database tables already exist, skipping import"
@@ -288,42 +288,42 @@ jobs:
           echo "[$(date)] Setting up admin user with email authentication..."
           
           # First check what tables exist
-          TABLES=$(mysql -u erp_user -pErpPassword123! saleserp_db -e "SHOW TABLES;" --skip-column-names)
+          TABLES=$(mysql -u erp_user -p ErpPassword123! saleserp_db -e "SHOW TABLES;" --skip-column-names)
           echo "[$(date)] Available tables: $TABLES"
           
-          # Try different table structures for user authentication
-          mysql -u erp_user -pErpPassword123! saleserp_db << 'SQLEOF'
-          -- Add email column to users table if it doesn't exist
-          ALTER TABLE users ADD COLUMN email VARCHAR(255) UNIQUE AFTER company_name;
+          # Check if email column exists in users table
+          EMAIL_COLUMN_EXISTS=$(mysql -u erp_user -p ErpPassword123! saleserp_db -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='saleserp_db' AND table_name='users' AND column_name='email';" --skip-column-names 2>/dev/null || echo "0")
           
-          -- Update existing admin user with email
-          UPDATE users SET email = 'admin@saleserp.com' WHERE id = 1;
+          # Add email column only if it doesn't exist
+          if [ "$EMAIL_COLUMN_EXISTS" = "0" ]; then
+            echo "[$(date)] Adding email column to users table..."
+            mysql -u erp_user -p ErpPassword123! saleserp_db -e "ALTER TABLE users ADD COLUMN email VARCHAR(255) UNIQUE AFTER company_name;" || true
+          else
+            echo "[$(date)] Email column already exists in users table"
+          fi
           
-          -- Update user_login with both MD5 and SHA1 passwords (try both)
-          UPDATE user_login SET password = MD5('admin123') WHERE user_id = 1;
+          # Update existing admin user with email
+          echo "[$(date)] Updating admin user with email..."
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "UPDATE users SET email = 'admin@saleserp.com' WHERE id = 1;" || true
           
-          -- Also try creating web_user entry if table exists
+          # Try both MD5 and SHA1 passwords for user_login table
+          echo "[$(date)] Updating user_login password..."
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "UPDATE user_login SET password = MD5('admin123') WHERE user_id = 1;" || true
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "UPDATE user_login SET password = SHA1('admin123') WHERE user_id = 1;" || true
+          
+          # Try creating web_user entry if table exists
+          echo "[$(date)] Creating/updating web_user entry..."
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "
           INSERT IGNORE INTO web_user (user_id, firstname, lastname, email, password, status, user_type, is_active, last_login, ip_address) 
           VALUES (1, 'Admin', 'User', 'admin@saleserp.com', MD5('admin123'), 1, 1, 1, NOW(), '0.0.0.0')
           ON DUPLICATE KEY UPDATE 
           firstname='Admin', lastname='User', email='admin@saleserp.com', password=MD5('admin123'), status=1, user_type=1, is_active=1;
-          
-          SQLEOF
-          
-          # Handle SQL errors gracefully
-          if [ $? -eq 0 ]; then
-            echo "[$(date)] Database user setup completed successfully"
-          else
-            echo "[$(date)] Some database operations failed, trying alternative approach..."
-            # Try with individual commands
-            mysql -u erp_user -pErpPassword123! saleserp_db -e "UPDATE user_login SET password = MD5('admin123') WHERE user_id = 1;" || true
-            mysql -u erp_user -pErpPassword123! saleserp_db -e "UPDATE user_login SET password = SHA1('admin123') WHERE user_id = 1;" || true
-          fi
+          " 2>/dev/null || echo "web_user table might not exist, skipping..."
           
           # Verify user setup
           echo "[$(date)] Verifying user setup..."
-          mysql -u erp_user -pErpPassword123! saleserp_db -e "SELECT * FROM users WHERE id = 1;" || true
-          mysql -u erp_user -pErpPassword123! saleserp_db -e "SELECT * FROM user_login WHERE user_id = 1;" || true
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "SELECT * FROM users WHERE id = 1;" || true
+          mysql -u erp_user -p ErpPassword123! saleserp_db -e "SELECT * FROM user_login WHERE user_id = 1;" || true
           
           echo "[$(date)] Admin user configured with credentials:"
           echo "Email: admin@saleserp.com"
