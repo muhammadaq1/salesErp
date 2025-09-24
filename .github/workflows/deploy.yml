@@ -1,0 +1,153 @@
+name: Deploy SalesERP to VPS
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Deploy to VPS
+      uses: appleboy/ssh-action@v0.1.7
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USERNAME }}
+        password: ${{ secrets.VPS_PASSWORD }}
+        script: |
+          # Update system packages
+          apt update && apt upgrade -y
+          
+          # Install LEMP stack if not already installed
+          apt install -y nginx mysql-server php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-mysqli php8.1-json php8.1-common php8.1-opcache unzip git
+          
+          # Start and enable services
+          systemctl start nginx || true
+          systemctl enable nginx || true
+          systemctl start php8.1-fpm || true
+          systemctl enable php8.1-fpm || true
+          systemctl start mysql || true
+          systemctl enable mysql || true
+          
+          # Create web directory
+          mkdir -p /var/www/html
+          
+          # Backup existing installation if it exists
+          if [ -d "/var/www/html_backup" ]; then
+            rm -rf /var/www/html_backup
+          fi
+          if [ -d "/var/www/html" ] && [ "$(ls -A /var/www/html)" ]; then
+            mv /var/www/html /var/www/html_backup
+            mkdir -p /var/www/html
+          fi
+          
+          # Clone the repository
+          cd /tmp
+          rm -rf saleserp
+          git clone https://github.com/muhammadaq1/salesErp.git saleserp
+          cd saleserp
+          
+          # Copy files to web directory
+          cp -R * /var/www/html/
+          
+          # Set up database configuration
+          cp /var/www/html/application/config/database.example.php /var/www/html/application/config/database.php
+          
+          # Set proper ownership and permissions
+          chown -R www-data:www-data /var/www/html
+          chmod -R 755 /var/www/html
+          chmod -R 777 /var/www/html/assets/
+          chmod -R 777 /var/www/html/my-assets/
+          chmod -R 777 /var/www/html/application/config/
+          chmod -R 777 /var/www/html/application/cache/
+          chmod -R 777 /var/www/html/application/ci_sessions/
+          chmod -R 777 /var/www/html/uploads/
+          
+          # Configure Nginx
+          cat > /etc/nginx/sites-available/saleserp << 'EOL'
+          server {
+              listen 80;
+              listen [::]:80;
+              
+              server_name 45.61.140.213;
+              root /var/www/html;
+              index index.php index.html index.htm;
+              
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              
+              # Disable access to sensitive files
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+              
+              location ~ ^/(application|system|vendor)/ {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+              
+              # Main location block
+              location / {
+                  try_files $uri $uri/ /index.php?/$request_uri;
+              }
+              
+              # PHP processing
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include fastcgi_params;
+                  
+                  # Increase timeout
+                  fastcgi_read_timeout 300;
+                  fastcgi_connect_timeout 300;
+                  fastcgi_send_timeout 300;
+              }
+              
+              # Static files
+              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+              
+              # Error and access logs
+              error_log /var/log/nginx/saleserp_error.log;
+              access_log /var/log/nginx/saleserp_access.log;
+          }
+          EOL
+          
+          # Enable site
+          rm -f /etc/nginx/sites-enabled/default
+          ln -sf /etc/nginx/sites-available/saleserp /etc/nginx/sites-enabled/
+          
+          # Test and restart nginx
+          nginx -t && systemctl restart nginx
+          systemctl restart php8.1-fpm
+          
+          # Setup database (only if not exists)
+          mysql -u root -e "CREATE DATABASE IF NOT EXISTS saleserp_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
+          mysql -u root -e "CREATE USER IF NOT EXISTS 'erp_user'@'localhost' IDENTIFIED BY 'ErpPassword123!';" || true
+          mysql -u root -e "GRANT ALL PRIVILEGES ON saleserp_db.* TO 'erp_user'@'localhost';" || true
+          mysql -u root -e "FLUSH PRIVILEGES;" || true
+          
+          # Import database if tables don't exist
+          TABLE_COUNT=$(mysql -u erp_user -pErpPassword123! -e "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'saleserp_db';" --skip-column-names 2>/dev/null | tail -1)
+          if [ "$TABLE_COUNT" = "0" ]; then
+            mysql -u erp_user -pErpPassword123! saleserp_db < /var/www/html/install/sql/install.sql
+          fi
+          
+          # Clean up
+          rm -rf /tmp/saleserp
+          
+          echo "Deployment completed successfully!"
+          echo "Access your application at: http://45.61.140.213"
