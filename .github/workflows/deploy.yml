@@ -36,22 +36,53 @@ jobs:
           
           # Install LEMP stack
           echo "[$(date)] Installing LEMP stack..."
-          apt install -y nginx mysql-server php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-mysqli php8.1-json php8.1-common php8.1-opcache unzip git curl
+          apt install -y nginx mysql-server php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-mysqli php8.1-json php8.1-common php8.1-opcache unzip git curl net-tools wget
+          
+          # Configure MySQL first
+          echo "[$(date)] Configuring MySQL..."
+          # Set MySQL root password to empty for automated setup
+          debconf-set-selections <<< 'mysql-server mysql-server/root_password password '
+          debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password '
           
           # Start and enable services
           echo "[$(date)] Starting services..."
           systemctl start nginx
           systemctl enable nginx
+          echo "Nginx started: $(systemctl is-active nginx)"
+          
           systemctl start php8.1-fpm
           systemctl enable php8.1-fpm
+          echo "PHP-FPM started: $(systemctl is-active php8.1-fpm)"
+          
           systemctl start mysql
           systemctl enable mysql
+          echo "MySQL started: $(systemctl is-active mysql)"
           
-          # Verify services are running
+          # Wait a moment for services to fully start
+          sleep 5
+          
+          # Verify services are running with detailed error reporting
           echo "[$(date)] Verifying services..."
-          systemctl is-active --quiet nginx || (echo "Nginx failed to start" && systemctl status nginx && exit 1)
-          systemctl is-active --quiet php8.1-fpm || (echo "PHP-FPM failed to start" && systemctl status php8.1-fpm && exit 1)
-          systemctl is-active --quiet mysql || (echo "MySQL failed to start" && systemctl status mysql && exit 1)
+          if ! systemctl is-active --quiet nginx; then
+            echo "Nginx failed to start"
+            systemctl status nginx
+            journalctl -u nginx --no-pager -n 20
+            exit 1
+          fi
+          
+          if ! systemctl is-active --quiet php8.1-fpm; then
+            echo "PHP-FPM failed to start"
+            systemctl status php8.1-fpm
+            journalctl -u php8.1-fpm --no-pager -n 20
+            exit 1
+          fi
+          
+          if ! systemctl is-active --quiet mysql; then
+            echo "MySQL failed to start"
+            systemctl status mysql
+            journalctl -u mysql --no-pager -n 20
+            exit 1
+          fi
           
           # Create web directory
           mkdir -p /var/www/html
@@ -88,7 +119,8 @@ jobs:
           chmod -R 777 /var/www/html/uploads/
           
           # Configure Nginx
-          cat > /etc/nginx/sites-available/saleserp << 'EOL'
+          echo "[$(date)] Configuring Nginx..."
+          cat > /etc/nginx/sites-available/saleserp << 'NGINXEOF'
           server {
               listen 80;
               listen [::]:80;
@@ -143,15 +175,29 @@ jobs:
               error_log /var/log/nginx/saleserp_error.log;
               access_log /var/log/nginx/saleserp_access.log;
           }
-          EOL
+          NGINXEOF
           
           # Enable site
           rm -f /etc/nginx/sites-enabled/default
           ln -sf /etc/nginx/sites-available/saleserp /etc/nginx/sites-enabled/
           
           # Test and restart nginx
-          nginx -t && systemctl restart nginx
+          echo "[$(date)] Testing Nginx configuration..."
+          if ! nginx -t; then
+            echo "Nginx configuration test failed"
+            exit 1
+          fi
+          
+          systemctl restart nginx
           systemctl restart php8.1-fpm
+          
+          # Wait for services to restart
+          sleep 3
+          
+          # Verify services are still running after restart
+          echo "[$(date)] Verifying services after restart..."
+          systemctl is-active nginx || (echo "Nginx not running after restart" && systemctl status nginx && exit 1)
+          systemctl is-active php8.1-fpm || (echo "PHP-FPM not running after restart" && systemctl status php8.1-fpm && exit 1)
           
           # Setup database (only if not exists)
           echo "[$(date)] Setting up database..."
@@ -182,10 +228,27 @@ jobs:
           systemctl is-active --quiet mysql && echo "✓ MySQL is running"
           
           # Test web server response
-          if curl -f -s http://localhost > /dev/null; then
+          echo "[$(date)] Testing web server response..."
+          
+          # Check if port 80 is listening
+          if ! netstat -tlnp | grep :80; then
+            echo "Port 80 is not listening"
+            netstat -tlnp
+            exit 1
+          fi
+          
+          # Test web server response
+          if curl -f -s -o /dev/null http://localhost; then
             echo "✓ Web server is responding"
           else
-            echo "✗ Web server is not responding" && exit 1
+            echo "✗ Web server is not responding"
+            echo "Checking nginx error logs:"
+            tail -10 /var/log/nginx/error.log
+            echo "Checking nginx access logs:"
+            tail -10 /var/log/nginx/access.log
+            echo "Testing with wget:"
+            wget -O- http://localhost || true
+            exit 1
           fi
           
           # Clean up
